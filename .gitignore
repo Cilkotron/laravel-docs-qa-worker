@@ -1,1 +1,64 @@
-.md
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Wrangler
+.wrangler/
+.dev.vars
+.dev.vars.*
+wrangler.toml.local
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build output
+dist/
+build/
+.output/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python (za ingest pipeline)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+ingest/cache/
+ingest/output/*.jsonl
+
+# Cloudflare local state
+.miniflare/
+
+# TypeScript
+*.tsbuildinfo
+
+# Claude Code (ako želiš da skineš — pogledaj napomenu gore)
+# CLAUDE.md
+# PLAN.md
+# DECISIONS.md
+
+# Claude Code session data (ovo MORA da bude u gitignore)
+.claude/
+.claude.json
