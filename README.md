@@ -2,14 +2,13 @@
 
 A production-grade RAG (Retrieval-Augmented Generation) chatbot built entirely on the Cloudflare stack. Answers questions about the Laravel PHP framework using its official documentation as the knowledge source, with cited sources.
 
-**Live demo:** `https://laravel-docs-qa.psiho747.workers.dev`
 
 ## What it does
 
 POST a natural-language question to `/api/ask` and receive a streamed AI answer with citations linking back to Laravel's official documentation.
 
 ```bash
-curl -X POST https://laravel-docs-qa.psiho747.workers.dev/api/ask \
+curl -X POST https://{worker_url}/api/ask \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"question":"How do I define a route in Laravel?"}' \
