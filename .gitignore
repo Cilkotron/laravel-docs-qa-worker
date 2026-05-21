@@ -62,3 +62,10 @@ ingest/output/*.jsonl
 # Claude Code session data (ovo MORA da bude u gitignore)
 .claude/
 .claude.json
+
+# Ingest pipeline outputs (generated, large files)
+ingest/cache/
+ingest/chunks.json
+ingest/chunks.jsonl
+ingest/vectorize_upload.ndjson
+ingest/venv/

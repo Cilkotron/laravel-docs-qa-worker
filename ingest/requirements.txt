@@ -1,0 +1,4 @@
+sentence-transformers
+markdown-it-py
+tqdm
+gitpython
