@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from './bindings/env';
+import { logQuery, hashIp } from './lib/logger';
+import { RateLimiter } from './durable_objects/rate_limiter';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -39,6 +41,8 @@ app.get('/health', (c) => {
 // /api/ask — RAG question answering PROTECTED (requires Bearer token)
 // ============================================================
 app.post('/api/ask', async (c) => {
+	const startTime = Date.now();
+
 	let body: { question?: string };
 
 	try {
@@ -55,6 +59,31 @@ app.post('/api/ask', async (c) => {
 	if (question.length > 500) {
 		return c.json({ error: 'Question too long (max 500 chars)' }, 400);
 	}
+
+	// ============ Before starting: Rate limit check  ============
+
+	const clientIp = c.req.header('CF-Connecting-IP') || 'unknown';
+	const ipHash = await hashIp(clientIp);
+
+	const rateLimiterId = c.env.RATE_LIMITER.idFromName(ipHash);
+	const rateLimiter = c.env.RATE_LIMITER.get(rateLimiterId);
+	const rateLimitResult = await rateLimiter.checkAndIncrement();
+
+	if (!rateLimitResult.allowed) {
+		return c.json(
+			{
+				error: 'Rate limit exceeded',
+				message: `Maximum 20 requests per hour. Try again in ${rateLimitResult.retryAfter} seconds.`,
+			},
+			429,
+			{
+				'Retry-After': String(rateLimitResult.retryAfter),
+				'X-RateLimit-Limit': '20',
+				'X-RateLimit-Remaining': '0',
+			},
+		);
+	}
+	// ====================================================
 
 	try {
 		// Step 1: Embed the question
@@ -136,7 +165,21 @@ app.post('/api/ask', async (c) => {
 			max_tokens: 512,
 		});
 
-		// Step 7: Return streaming response with sources in custom header
+		// ============ Step 7: Log query asynchronously ============
+		const latencyMs = Date.now() - startTime;
+
+		// Fire-and-forget logging (doesn't block response)
+		c.executionCtx.waitUntil(
+			logQuery(c.env.DB, {
+				question,
+				latencyMs,
+				numSources: searchResults.matches.length,
+				ipHash,
+			}),
+		);
+		// =======================================================
+
+		// Step 8: Return streaming response with sources in custom header
 		return new Response(llmStream as ReadableStream, {
 			headers: {
 				'Content-Type': 'text/event-stream',
@@ -162,5 +205,8 @@ app.post('/api/ask', async (c) => {
 app.notFound((c) => {
 	return c.json({ error: 'Not Found' }, 404);
 });
+
+// MUST be re-exported for Workers runtime to discover the DO class
+export { RateLimiter };
 
 export default app;

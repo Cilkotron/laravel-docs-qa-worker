@@ -21,4 +21,26 @@
 	"ai": {
 		"binding": "AI",
 	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "laravel-docs-qa",
+			"database_id": "a16ad231-d4b5-407b-9889-84eab7ae5fce",
+		},
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "RATE_LIMITER",
+				"class_name": "RateLimiter",
+			},
+		],
+	},
+
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["RateLimiter"],
+		},
+	],
 }
