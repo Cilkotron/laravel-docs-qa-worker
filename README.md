@@ -1,12 +1,16 @@
-# Laravel Docs Q&A CF Worker 
+# Laravel Docs Q&A
 
 A production-grade RAG (Retrieval-Augmented Generation) chatbot built entirely on the Cloudflare stack. Answers questions about the Laravel PHP framework using its official documentation as the knowledge source, with cited sources.
 
-**Live demo:** Available on request — contact me for the URL and access token.
+**Live demo:** [laravel-docs-qa-frontend.pages.dev](https://laravel-docs-qa-frontend.pages.dev/)
+
+![Demo screenshot](docs/screenshot.png)
 
 ## What it does
 
-POST a natural-language question to `/api/ask` and receive a streamed AI answer with citations linking back to Laravel's official documentation.
+Type a natural-language question and receive a streamed AI answer with citations linking back to Laravel's official documentation. The frontend lives on Cloudflare Pages; a Pages Functions proxy forwards requests to a Cloudflare Worker that runs the RAG pipeline.
+
+The API can also be called directly:
 
 ```bash
 curl -X POST https://YOUR-WORKER-URL/api/ask \
@@ -16,26 +20,34 @@ curl -X POST https://YOUR-WORKER-URL/api/ask \
   -N
 ```
 
-The response is streamed via Server-Sent Events, with citations referencing numbered sources in the answer text. Source URLs are returned in the `X-Sources` response header.
+The response is streamed via Server-Sent Events. Source URLs are returned in the `X-Sources` response header. The Worker URL and access token are available on request.
 
 ## Architecture
 
 ```
-                      Bearer token check
-                              │
-User question  ──────────────►│
-                              ▼
-┌──────────────────────────────────────────────┐
-│        Cloudflare Worker (Hono)              │
-│                                              │
-│   1. Auth check (Bearer token)               │
-│   2. Rate limit check (Durable Object)       │
-│   3. Embed question via Workers AI           │
-│   4. Query Vectorize (top-5)                 │
-│   5. Build prompt with retrieved context     │
-│   6. Stream LLM response (Llama 3.1)         │
-│   7. Fire-and-forget D1 logging              │
-└──────┬───────────────────────────────────────┘
+Browser
+  │ POST /api/ask
+  ▼
+┌─────────────────────────────────────────────┐
+│   Cloudflare Pages                          │
+│     - Vue 3 UI (Vite + Tailwind v4)         │
+│     - Pages Functions proxy:                │
+│        adds Bearer token (server-side env)  │
+│        forwards stream to Worker            │
+└──────┬──────────────────────────────────────┘
+       │ POST /api/ask + Bearer token
+       ▼
+┌─────────────────────────────────────────────┐
+│   Cloudflare Worker (Hono)                  │
+│                                             │
+│   1. Auth check (Bearer token)              │
+│   2. Rate limit check (Durable Object)      │
+│   3. Embed question via Workers AI          │
+│   4. Query Vectorize (top-5)                │
+│   5. Build prompt with retrieved context    │
+│   6. Stream LLM response (Llama 3.1)        │
+│   7. Fire-and-forget D1 logging             │
+└──────┬──────────────────────────────────────┘
        │
    ┌───┴─────┬──────────┬──────────┬──────────┐
    ▼         ▼          ▼          ▼          ▼
@@ -48,7 +60,7 @@ User question  ──────────────►│
   embed     retrieve    generate    audit     20/IP/hr
 ```
 
-Everything runs on Cloudflare's free tier. No external services (no OpenAI, no Pinecone, no third-party hosting).
+Everything runs on Cloudflare's free tier. No external services (no OpenAI, no Pinecone, no third-party hosting). The frontend repo is separate: [laravel-docs-qa-frontend](https://github.com/Cilkotron/laravel-docs-qa-frontend).
 
 ## Tech stack
 
@@ -65,6 +77,11 @@ Everything runs on Cloudflare's free tier. No external services (no OpenAI, no P
 - Vectorize — vector index, 2,366 chunks, cosine similarity
 - D1 — SQLite database for query logging (analytics, debug)
 - Durable Object with SQLite backend — per-IP rate limiting
+
+**Frontend:**
+- Vue 3 (Options API) + TypeScript
+- Vite + Tailwind v4
+- Deployed on Cloudflare Pages with Functions proxy
 
 **Knowledge base:**
 - Source: [laravel/docs](https://github.com/laravel/docs) (branch `13.x`)
@@ -106,6 +123,9 @@ Routing, middleware, and type-safe bindings out of the box. Single-handler vanil
 **Why Durable Objects over KV for rate limiting?**
 KV has eventual consistency (up to 60 seconds globally) and a 1,000 writes/day free-tier ceiling — both fatal for rate limiting. Durable Objects with SQLite backend give strong per-instance consistency, atomic increments, and a much higher free-tier budget. The `idFromName(ipHash)` pattern routes every request from a given IP to the same DO instance.
 
+**Why a Pages Functions proxy in front of the Worker?**
+The Worker requires Bearer authentication. If the frontend held the token directly, it would be exposed in the browser (any client-side env var is public after build). The Pages Functions proxy holds the token server-side and injects it on every request, so the browser never sees it. This is the same public-private split used in production SaaS apps.
+
 **Why hash the IP?**
 Logs and rate-limit state never store raw IPs. A SHA-256 truncated to 16 hex chars is enough to uniquely group requests without retaining personally identifiable network data.
 
@@ -136,6 +156,8 @@ laravel-docs-qa/
 │   ├── prepare_for_vectorize.py       # Convert to Vectorize NDJSON format
 │   ├── test_search.py                 # CLI smoke test for Vectorize search
 │   └── requirements.txt
+├── docs/
+│   └── screenshot.png                 # Demo screenshot used in this README
 ├── wrangler.jsonc                     # Worker config with all bindings
 ├── package.json
 └── tsconfig.json
