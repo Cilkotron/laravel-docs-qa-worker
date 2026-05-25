@@ -69,3 +69,7 @@ ingest/chunks.json
 ingest/chunks.jsonl
 ingest/vectorize_upload.ndjson
 ingest/venv/
+# Internal planning docs
+CLAUDE.md
+PLAN.md
+DECISIONS.md
