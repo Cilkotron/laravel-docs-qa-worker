@@ -1,46 +1,51 @@
-# Laravel Docs Q&A
+# Laravel Docs Q&A CF Worker 
 
 A production-grade RAG (Retrieval-Augmented Generation) chatbot built entirely on the Cloudflare stack. Answers questions about the Laravel PHP framework using its official documentation as the knowledge source, with cited sources.
 
+**Live demo:** Available on request — contact me for the URL and access token.
 
 ## What it does
 
 POST a natural-language question to `/api/ask` and receive a streamed AI answer with citations linking back to Laravel's official documentation.
 
 ```bash
-curl -X POST https://{worker_url}/api/ask \
+curl -X POST https://YOUR-WORKER-URL/api/ask \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"question":"How do I define a route in Laravel?"}' \
   -N
 ```
 
-The response is streamed via Server-Sent Events, with citations referencing numbered sources in the answer text.
+The response is streamed via Server-Sent Events, with citations referencing numbered sources in the answer text. Source URLs are returned in the `X-Sources` response header.
 
 ## Architecture
 
 ```
-User question
-     │
-     ▼
-┌─────────────────────────────────┐
-│   Cloudflare Worker (Hono)      │
-│                                 │
-│  1. Auth check (Bearer token)   │
-│  2. Embed question via AI       │
-│  3. Query Vectorize (top-5)     │
-│  4. Build prompt with context   │
-│  5. Stream LLM response         │
-└────────┬────────────────────────┘
-         │
-    ┌────┴─────┬──────────┐
-    ▼          ▼          ▼
-┌────────┐ ┌─────────┐ ┌────────┐
-│Workers │ │Vectorize│ │Workers │
-│  AI    │ │ (768-d) │ │  AI    │
-│(BGE)   │ │ cosine  │ │(Llama) │
-└────────┘ └─────────┘ └────────┘
-   embed     retrieve   generate
+                      Bearer token check
+                              │
+User question  ──────────────►│
+                              ▼
+┌──────────────────────────────────────────────┐
+│        Cloudflare Worker (Hono)              │
+│                                              │
+│   1. Auth check (Bearer token)               │
+│   2. Rate limit check (Durable Object)       │
+│   3. Embed question via Workers AI           │
+│   4. Query Vectorize (top-5)                 │
+│   5. Build prompt with retrieved context     │
+│   6. Stream LLM response (Llama 3.1)         │
+│   7. Fire-and-forget D1 logging              │
+└──────┬───────────────────────────────────────┘
+       │
+   ┌───┴─────┬──────────┬──────────┬──────────┐
+   ▼         ▼          ▼          ▼          ▼
+┌────────┐ ┌─────────┐ ┌────────┐ ┌────────┐ ┌─────────┐
+│Workers │ │Vectorize│ │Workers │ │  D1    │ │Durable  │
+│  AI    │ │ (768-d) │ │  AI    │ │(query  │ │Object   │
+│(BGE)   │ │ cosine  │ │(Llama) │ │ logs)  │ │(rate    │
+│        │ │         │ │        │ │        │ │ limits) │
+└────────┘ └─────────┘ └────────┘ └────────┘ └─────────┘
+  embed     retrieve    generate    audit     20/IP/hr
 ```
 
 Everything runs on Cloudflare's free tier. No external services (no OpenAI, no Pinecone, no third-party hosting).
@@ -50,12 +55,16 @@ Everything runs on Cloudflare's free tier. No external services (no OpenAI, no P
 **Worker:**
 - Cloudflare Workers (TypeScript)
 - [Hono](https://hono.dev/) — lightweight edge-native web framework
-- Workers AI bindings
-- Vectorize bindings
+- Workers AI, Vectorize, D1, and Durable Object bindings
 
 **AI models (both via Workers AI):**
 - Embeddings: `@cf/baai/bge-base-en-v1.5` (768 dimensions)
 - LLM: `@cf/meta/llama-3.1-8b-instruct` (streaming responses)
+
+**Storage and state:**
+- Vectorize — vector index, 2,366 chunks, cosine similarity
+- D1 — SQLite database for query logging (analytics, debug)
+- Durable Object with SQLite backend — per-IP rate limiting
 
 **Knowledge base:**
 - Source: [laravel/docs](https://github.com/laravel/docs) (branch `13.x`)
@@ -73,11 +82,13 @@ Everything runs on Cloudflare's free tier. No external services (no OpenAI, no P
 
 Each chunk in the knowledge base carries metadata: original file, section headings (H1/H2/H3), source URL on laravel.com. When a question comes in:
 
-1. The question is converted to a 768-dimensional vector using the same embedding model as the indexed chunks (consistency matters — different models produce incompatible vector spaces).
-2. Vectorize returns the top-5 chunks ranked by cosine similarity.
-3. The retrieved chunks are formatted as numbered sources and inserted into the LLM prompt as context.
-4. The LLM is instructed to answer only from the provided context and cite sources using `[Source N]` notation.
-5. The LLM response is streamed back to the client. Source URLs are returned in the `X-Sources` response header.
+1. **Auth check** — Bearer token must match the value stored as a Worker Secret.
+2. **Rate limit check** — a Durable Object keyed by hashed IP enforces 20 requests per hour with a sliding window. Returns 429 with `Retry-After` if exceeded.
+3. **Embed** — the question is converted to a 768-dimensional vector using the same embedding model as the indexed chunks (consistency matters — different models produce incompatible vector spaces).
+4. **Retrieve** — Vectorize returns the top-5 chunks ranked by cosine similarity.
+5. **Generate** — retrieved chunks are formatted as numbered sources and inserted into the LLM prompt. The model is instructed to answer only from the provided context and cite sources using `[Source N]` notation.
+6. **Stream** — the LLM response streams back as Server-Sent Events. Source URLs ride along in the `X-Sources` response header.
+7. **Log** — a fire-and-forget write to D1 records the query, latency, source count, and a hashed IP. Uses `ctx.waitUntil()` so logging never blocks the response.
 
 ## Why this stack
 
@@ -92,25 +103,40 @@ Cross-model vector compatibility is unreliable. Using `BAAI/bge-base-en-v1.5` co
 **Why Hono over vanilla Workers?**
 Routing, middleware, and type-safe bindings out of the box. Single-handler vanilla Workers code becomes painful past two endpoints; Hono adds ~12KB and saves significant boilerplate.
 
+**Why Durable Objects over KV for rate limiting?**
+KV has eventual consistency (up to 60 seconds globally) and a 1,000 writes/day free-tier ceiling — both fatal for rate limiting. Durable Objects with SQLite backend give strong per-instance consistency, atomic increments, and a much higher free-tier budget. The `idFromName(ipHash)` pattern routes every request from a given IP to the same DO instance.
+
+**Why hash the IP?**
+Logs and rate-limit state never store raw IPs. A SHA-256 truncated to 16 hex chars is enough to uniquely group requests without retaining personally identifiable network data.
+
 **Why cosine similarity over dot product?**
 The BGE model produces normalized embeddings, so cosine and dot product are equivalent in ranking. Cosine is chosen for clarity — it's the default mental model when discussing semantic similarity.
+
+**Why fire-and-forget logging?**
+`ctx.waitUntil()` lets D1 writes finish after the response has already been sent to the client. The user never waits for analytics.
 
 ## Project structure
 
 ```
 laravel-docs-qa/
 ├── src/
-│   ├── index.ts              # Hono app: /health, /api/ask, auth middleware
-│   └── bindings/
-│       └── env.ts            # Type definitions for Worker bindings
+│   ├── index.ts                       # Hono app, auth middleware, routes
+│   ├── bindings/
+│   │   └── env.ts                     # Type definitions for Worker bindings
+│   ├── lib/
+│   │   └── logger.ts                  # D1 logging + IP hashing helpers
+│   └── durable_objects/
+│       └── rate_limiter.ts            # Per-IP rate limiter (SQLite-backed DO)
+├── migrations/
+│   └── 0001_create_queries.sql        # D1 schema
 ├── ingest/
-│   ├── clone_docs.py         # Clone laravel/docs repo
-│   ├── chunk_docs.py         # Parse markdown, chunk with metadata
-│   ├── embed_chunks.py       # Generate embeddings locally
-│   ├── prepare_for_vectorize.py  # Convert to Vectorize NDJSON format
-│   ├── test_search.py        # Smoke test: search Vectorize from CLI
+│   ├── clone_docs.py                  # Clone laravel/docs repo
+│   ├── chunk_docs.py                  # Parse markdown, chunk with metadata
+│   ├── embed_chunks.py                # Generate embeddings locally
+│   ├── prepare_for_vectorize.py       # Convert to Vectorize NDJSON format
+│   ├── test_search.py                 # CLI smoke test for Vectorize search
 │   └── requirements.txt
-├── wrangler.jsonc            # Worker config with bindings
+├── wrangler.jsonc                     # Worker config with all bindings
 ├── package.json
 └── tsconfig.json
 ```
@@ -157,6 +183,17 @@ npx wrangler vectorize create laravel-docs --dimensions=768 --metric=cosine
 npx wrangler vectorize insert laravel-docs \
   --file=ingest/vectorize_upload.ndjson \
   --batch-size=1000
+```
+
+### Create D1 database and run migration
+
+```bash
+npx wrangler d1 create laravel-docs-qa
+# Copy the database_id into wrangler.jsonc under d1_databases
+
+npx wrangler d1 execute laravel-docs-qa \
+  --file=migrations/0001_create_queries.sql \
+  --remote
 ```
 
 ### Set the API token
@@ -207,7 +244,7 @@ Public endpoint. Returns Worker status. No auth required.
 
 ### `POST /api/ask`
 
-Protected endpoint. Requires `Authorization: Bearer <token>` header.
+Protected endpoint. Requires `Authorization: Bearer <token>` header and is subject to rate limiting.
 
 **Request:**
 ```json
@@ -229,7 +266,36 @@ Source URLs for the retrieved context are returned in the `X-Sources` response h
 - `400` — missing/invalid question
 - `401` — missing or invalid Bearer token
 - `404` — no relevant context found in knowledge base
+- `429` — rate limit exceeded (includes `Retry-After` header)
 - `500` — embedding or LLM failure
+
+## Observability
+
+Every successful request writes a row to D1 with:
+- Question text
+- Latency in milliseconds
+- Number of sources retrieved
+- Hashed IP (SHA-256, truncated)
+- Timestamp
+
+Useful queries:
+
+```bash
+# Recent queries:
+npx wrangler d1 execute laravel-docs-qa --remote --command="
+  SELECT question, latency_ms, num_sources,
+         datetime(created_at/1000, 'unixepoch') as ts
+  FROM queries ORDER BY created_at DESC LIMIT 20"
+
+# Latency stats:
+npx wrangler d1 execute laravel-docs-qa --remote --command="
+  SELECT
+    COUNT(*) as total,
+    AVG(latency_ms) as avg_ms,
+    MIN(latency_ms) as min_ms,
+    MAX(latency_ms) as max_ms
+  FROM queries"
+```
 
 ## Cost notes
 
@@ -237,7 +303,8 @@ At rest, the entire system runs on Cloudflare free tier:
 - Workers: free (100K requests/day)
 - Workers AI: 10K neurons/day (≈ 100–300 question answers)
 - Vectorize: 5M stored vectors free (we use 2,366)
-- D1 / KV: not currently used
+- D1: 5GB storage, 25M reads/day, 50K writes/day
+- Durable Objects: 1M requests/month, sufficient for the rate limiter
 
 For 1K queries/day in production, the bottleneck would be Workers AI neurons (~$5/month on the Workers Paid plan), not infrastructure.
 
