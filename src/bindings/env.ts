@@ -7,5 +7,5 @@ export type Env = {
 	VECTORIZE: Vectorize; // Vectorize binding
 	API_TOKEN: string; // Bearer token for /api/ask authentication
 	DB: D1Database;
-     RATE_LIMITER: DurableObjectNamespace<RateLimiter>;
+    RATE_LIMITER: DurableObjectNamespace<RateLimiter>;
 };
