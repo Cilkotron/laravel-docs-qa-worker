@@ -2,7 +2,7 @@
 
 A production-grade RAG (Retrieval-Augmented Generation) chatbot built entirely on the Cloudflare stack. Answers questions about the Laravel PHP framework using its official documentation as the knowledge source, with cited sources.
 
-**Live demo:** <a href="https://laravel-docs-qa-frontend.pages.dev/" target="_blank" rel="noopener noreferrer">laravel-docs-qa-frontend.pages.dev</a>
+**Live demo:** [laravel-docs-qa-frontend.pages.dev](https://laravel-docs-qa-frontend.pages.dev/) ↗
 
 ![Demo screenshot](docs/screenshot.png)
 
