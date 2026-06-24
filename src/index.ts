@@ -156,14 +156,17 @@ app.post('/api/ask', async (c) => {
             Answer (cite sources using [Source N]):`;
 
 		// Step 6: Call LLM with streaming
-		const llmStream = await c.env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
-			messages: [
-				{ role: 'system', content: systemPrompt },
-				{ role: 'user', content: userPrompt },
-			],
-			stream: true,
-			max_tokens: 512,
-		});
+		const llmStream = await c.env.AI.run(
+            "@cf/meta/llama-3.1-8b-instruct-fast",
+            {
+                messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt },
+                ],
+                stream: true,
+                max_tokens: 512,
+            }
+        );
 
 		// ============ Step 7: Log query asynchronously ============
 		const latencyMs = Date.now() - startTime;
